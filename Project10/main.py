@@ -25,7 +25,7 @@ AVAIL_GPUS = min(1, torch.cuda.device_count())
 # subject01.gif renamed to subject01.centerlight, because it does not match the naming scheme and subject01 does not have a centerlight shot.
 class YaleFacesDataset(Dataset):
     def __init__(self, transform=None):
-        self.img_dir = "Project10/yalefaces"
+        self.img_dir = "yalefaces"
         self.transform = transform
         self.imgs = []
         self.labels = []
@@ -199,7 +199,7 @@ class GAN(LightningModule):
         ax.xaxis.set_visible(False)
         ax.yaxis.set_visible(False)
 
-        plt.savefig(f"Project10/generated_images/{str(self.current_epoch)}.jpg", bbox_inches='tight', pad_inches=0.1)
+        plt.savefig(f"generated_images/{str(self.current_epoch)}.jpg", bbox_inches='tight', pad_inches=0.1)
         plt.clf()
 
 
