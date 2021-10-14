@@ -211,7 +211,8 @@ dataset = YaleFacesDataset(transform=transforms.Compose([
         transforms.Normalize((0.5,), (0.5,)),
 ]))
 dataloader = torch.utils.data.DataLoader(dataset, batch_size=55, shuffle=True)
-image_dim = dataset[0][0][0]
-model = GAN(*image_dim.shape)
+image_dim = dataset[0][0][0].shape
+print(f"image_dim={image_dim}")
+model = GAN(*image_dim)
 trainer = Trainer(gpus=AVAIL_GPUS, max_epochs=20000, progress_bar_refresh_rate=20, )
 trainer.fit(model, dataloader)
