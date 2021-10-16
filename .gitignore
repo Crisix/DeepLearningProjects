@@ -2,3 +2,5 @@
 venv
 Project11/train/*
 Project11/test/*
+Project11/checkpoints/*
+Project11/lightning_logs
