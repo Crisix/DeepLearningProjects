@@ -1,97 +1,27 @@
 # CODE IS FROM/BASED FROM:
 # https://pytorch-lightning.readthedocs.io/en/latest/notebooks/lightning_examples/basic-gan.html
 
-import os
 from collections import OrderedDict
 
+import matplotlib.pyplot as plt
 import numpy as np
 import torch
-import torch.nn as nn
 import torch.nn.functional as F
 import torch.utils.data
 import torchvision
 import torchvision.transforms as transforms
-from PIL import Image
 from pytorch_lightning import LightningModule, Trainer
-from torch.utils.data import Dataset
-import matplotlib.pyplot as plt
+from torch.distributions import OneHotCategorical
+from torch.nn import CrossEntropyLoss
+from torchvision.transforms import ToPILImage
+
+from Project10.Discriminator import MyDiscriminator, Discriminator
+from Project10.Generator import MyGenerator, Generator
+from Project10.YaleFacesDataset import YaleFacesDataset
 
 dataroot = "yalefaces"
 
 AVAIL_GPUS = min(1, torch.cuda.device_count())
-
-
-# subject01.glasses.gif deleted, because it seems to be a duplicate of subject01.glasses and does not match the naming scheme.
-# subject01.gif renamed to subject01.centerlight, because it does not match the naming scheme and subject01 does not have a centerlight shot.
-class YaleFacesDataset(Dataset):
-    def __init__(self, transform=None):
-        self.img_dir = "yalefaces"
-        self.transform = transform
-        self.imgs = []
-        self.labels = []
-        self.subjects = []
-        img_paths = os.listdir(self.img_dir)
-        for img in img_paths:
-            if img == "Readme.txt" or img == ".DS_Store":
-                continue
-            split = img.split(".")
-            self.subjects.append(split[0])
-            self.labels.append(split[1])
-            self.imgs.append(np.asarray(Image.open(os.path.join(self.img_dir, img))))
-        print(f"{len(self.imgs)} images")
-
-    def __len__(self):
-        return len(self.imgs)
-
-    def __getitem__(self, idx):
-        return self.transform(self.imgs[idx]).unsqueeze(0), self.labels[idx]
-
-
-class Generator(nn.Module):
-    def __init__(self, latent_dim, img_shape):
-        super().__init__()
-        self.img_shape = img_shape
-
-        def block(in_feat, out_feat, normalize=True):
-            layers = [nn.Linear(in_feat, out_feat)]
-            if normalize:
-                layers.append(nn.BatchNorm1d(out_feat, 0.8))
-            layers.append(nn.LeakyReLU(0.2, inplace=True))
-            return layers
-
-        self.model = nn.Sequential(
-                *block(latent_dim, 128, normalize=False),
-                *block(128, 256),
-                *block(256, 512),
-                *block(512, 1024),
-                nn.Linear(1024, int(np.prod(img_shape))),
-                nn.Tanh(),
-        )
-
-    def forward(self, z):
-        img = self.model(z)
-        img = img.view(img.size(0), *self.img_shape)
-        return img
-
-
-class Discriminator(nn.Module):
-    def __init__(self, img_shape):
-        super().__init__()
-
-        self.model = nn.Sequential(
-                nn.Linear(int(np.prod(img_shape)), 512),
-                nn.LeakyReLU(0.2, inplace=True),
-                nn.Linear(512, 256),
-                nn.LeakyReLU(0.2, inplace=True),
-                nn.Linear(256, 1),
-                nn.Sigmoid(),
-        )
-
-    def forward(self, img):
-        img_flat = img.view(img.size(0), -1)
-        validity = self.model(img_flat)
-
-        return validity
 
 
 class GAN(LightningModule):
@@ -100,6 +30,8 @@ class GAN(LightningModule):
             channels,
             width,
             height,
+            cat_ctrl_vars=None,
+            lmbda=1.0,
             latent_dim: int = 100,
             lr: float = 0.0002,
             b1: float = 0.5,
@@ -112,12 +44,25 @@ class GAN(LightningModule):
 
         # networks
         data_shape = (channels, width, height)
-        self.generator = Generator(latent_dim=self.hparams.latent_dim, img_shape=data_shape)
-        self.discriminator = Discriminator(img_shape=data_shape)
 
-        self.validation_z = torch.randn(8, self.hparams.latent_dim)
+        self.categorical_distribution = OneHotCategorical(torch.tensor([1] * cat_ctrl_vars))
 
-        self.example_input_array = torch.zeros(2, self.hparams.latent_dim)
+        latent = self.hparams.latent_dim + cat_ctrl_vars
+        # self.generator = MyGenerator(latent_dim=latent, img_shape=data_shape)  # 20.9 M
+        # self.discriminator = MyDiscriminator(img_shape=data_shape, cat_ctrl_vars=cat_ctrl_vars)  # 5.2 M
+
+        self.generator = Generator(latent_dim=latent, img_shape=data_shape)  # 20.4 M
+        self.discriminator = Discriminator(img_shape=data_shape, cat_ctrl_vars=cat_ctrl_vars)  # 10.0 M
+
+        # self.validation_z = torch.randn(8, self.hparams.latent_dim)
+        rows = 8
+        self.num_classes = cat_ctrl_vars
+        z = self.generate_latents(rows)[0]
+
+        self.validation_z = torch.hstack([z.repeat_interleave(cat_ctrl_vars, 0),
+                                          torch.eye(cat_ctrl_vars).repeat(rows, 1)])
+
+        # self.example_input_array = torch.zeros(2, self.hparams.latent_dim)
 
     def forward(self, z):
         return self.generator(z)
@@ -125,55 +70,64 @@ class GAN(LightningModule):
     def adversarial_loss(self, y_hat, y):
         return F.binary_cross_entropy(y_hat, y)
 
+    def categorical_loss(self, y_hat, y):
+        return F.cross_entropy(y_hat, y)
+
+    def generate_latents(self, batch_size):
+        z = torch.randn(batch_size, self.hparams.latent_dim)  # latent space: sample noise
+        # z = z.type_as(real_imgs)
+        c = self.categorical_distribution.sample([batch_size])  # latent space: sample categorical
+        c_idx = torch.argmax(c, dim=1)
+        return z, c, c_idx
+
     def training_step(self, batch, batch_idx, optimizer_idx):
-        imgs, _ = batch
+        real_imgs, _ = batch
 
-        # sample noise
-        z = torch.randn(imgs.shape[0], self.hparams.latent_dim)
-        z = z.type_as(imgs)
+        if optimizer_idx == 0:  # train generator
+            return self.train_generator(real_imgs)
+        if optimizer_idx == 1:  # train discriminator
+            return self.train_discriminator(real_imgs)
 
-        # train generator
-        if optimizer_idx == 0:
-            # generate images
-            self.generated_imgs = self(z)
+    def train_discriminator(self, real_imgs):
 
-            # log sampled images
-            sample_imgs = self.generated_imgs[:6]
-            grid = torchvision.utils.make_grid(sample_imgs)
-            self.logger.experiment.add_image("generated_images", grid, 0)
+        z, c, c_idx = self.generate_latents(real_imgs.shape[0])
+        cz = torch.hstack([c, z])
 
-            # ground truth result (ie: all fake)
-            # put on GPU because we created this tensor inside training_loop
-            valid = torch.ones(imgs.size(0), 1)
-            valid = valid.type_as(imgs)
+        # Measure discriminator's ability to classify real from generated samples
+        valid = torch.ones(real_imgs.size(0), 1).type_as(real_imgs)
+        d_pred, _ = self.discriminator(real_imgs)
+        real_loss = self.adversarial_loss(d_pred, valid)
 
-            # adversarial loss is binary cross-entropy
-            g_loss = self.adversarial_loss(self.discriminator(self(z)), valid)
-            tqdm_dict = {"g_loss": g_loss}
-            output = OrderedDict({"loss": g_loss, "progress_bar": tqdm_dict, "log": tqdm_dict})
-            return output
+        fake = torch.zeros(real_imgs.size(0), 1).type_as(real_imgs)
+        fake_imgs = self.generator(cz).detach()  # dont train generator -> detach
+        d_pred, cat_pred = self.discriminator(fake_imgs)
+        fake_loss = self.adversarial_loss(d_pred, fake)
 
-        # train discriminator
-        if optimizer_idx == 1:
-            # Measure discriminator's ability to classify real from generated samples
+        d_loss = (real_loss + fake_loss) / 2
+        q_loss = self.categorical_loss(cat_pred, c_idx)  # TODO IS THIS RIGHT?!?!
+        loss = d_loss + self.hparams.lmbda * q_loss
 
-            # how well can it label as real?
-            valid = torch.ones(imgs.size(0), 1)
-            valid = valid.type_as(imgs)
+        tqdm_dict = {"loss": loss, "d_loss": d_loss, "q_loss": q_loss}
+        output = OrderedDict({"loss": loss, "progress_bar": tqdm_dict, "log": tqdm_dict})
+        return output
 
-            real_loss = self.adversarial_loss(self.discriminator(imgs), valid)
+    def train_generator(self, real_imgs):
 
-            # how well can it label as fake?
-            fake = torch.zeros(imgs.size(0), 1)
-            fake = fake.type_as(imgs)
+        z, c, c_idx = self.generate_latents(real_imgs.shape[0])
+        cz = torch.hstack([c, z])
 
-            fake_loss = self.adversarial_loss(self.discriminator(self(z).detach()), fake)
+        # ground truth result (ie: all fake)
+        valid = torch.ones(real_imgs.size(0), 1).type_as(real_imgs)
+        fake_images = self.generator(cz)
+        # TODO sollte der discriminator hier nicht fixed sein?
+        d_pred, cat_pred = self.discriminator(fake_images)
 
-            # discriminator loss is the average of these
-            d_loss = (real_loss + fake_loss) / 2
-            tqdm_dict = {"d_loss": d_loss}
-            output = OrderedDict({"loss": d_loss, "progress_bar": tqdm_dict, "log": tqdm_dict})
-            return output
+        g_loss = self.adversarial_loss(d_pred, valid)
+        q_loss = self.categorical_loss(cat_pred, c_idx)
+        loss = g_loss + self.hparams.lmbda * q_loss
+
+        tqdm_dict = {"loss": loss, "g_loss": g_loss, "q_loss": q_loss}
+        return OrderedDict({"loss": loss, "progress_bar": tqdm_dict, "log": tqdm_dict})
 
     def configure_optimizers(self):
         lr = self.hparams.lr
@@ -185,34 +139,38 @@ class GAN(LightningModule):
         return [opt_g, opt_d], []
 
     def on_epoch_end(self):
-        z = self.validation_z.type_as(self.generator.model[0].weight)
+        if self.current_epoch % 50 == 0:
+            z = self.validation_z.type_as(self.generator.model[0].weight)
 
-        # log sampled images
-        sample_imgs = self(z)
-        grid = torchvision.utils.make_grid(sample_imgs)
-        self.logger.experiment.add_image("generated_images", grid, self.current_epoch)
+            # log sampled images
+            sample_imgs = self(z)
+            grid = torchvision.utils.make_grid(sample_imgs, range=(-1, 1), nrow=self.num_classes)
+            self.logger.experiment.add_image("generated_images", grid, self.current_epoch)
 
-        # Copied from https://www.programcreek.com/python/?code=lukasruff%2FDeep-SAD-PyTorch%2FDeep-SAD-PyTorch-master%2Fsrc%2Futils%2Fvisualization%2Fplot_images_grid.py
-        npgrid = grid.cpu().detach().numpy()
-        plt.imshow(np.transpose(npgrid, (1, 2, 0)), interpolation='nearest')
-        ax = plt.gca()
-        ax.xaxis.set_visible(False)
-        ax.yaxis.set_visible(False)
+            # Copied from https://www.programcreek.com/python/?code=lukasruff%2FDeep-SAD-PyTorch%2FDeep-SAD-PyTorch-master%2Fsrc%2Futils%2Fvisualization%2Fplot_images_grid.py
+            npgrid = grid.cpu().detach().numpy()
+            plt.figure(figsize=(25, 25))
+            plt.imshow(np.transpose(npgrid, (1, 2, 0)), interpolation='nearest')
+            ax = plt.gca()
+            ax.xaxis.set_visible(False)
+            ax.yaxis.set_visible(False)
 
-        plt.savefig(f"generated_images/{str(self.current_epoch)}.jpg", bbox_inches='tight', pad_inches=0.1)
-        plt.clf()
+            plt.savefig(f"generated_images/{str(self.current_epoch)}.png", bbox_inches='tight', pad_inches=0.1)
+            plt.clf()
+
 
 
 dataset = YaleFacesDataset(transform=transforms.Compose([
-        # transforms.Resize(image_size),
-        # transforms.CenterCrop(image_size),
+        ToPILImage(),
+        # transforms.Resize((243 // 4, 320 // 4)),  # -> (60, 80)
+        # transforms.Resize((120, 160)),  # /2
         transforms.ToTensor(),
-        # transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5)),
         transforms.Normalize((0.5,), (0.5,)),
 ]))
-dataloader = torch.utils.data.DataLoader(dataset, batch_size=55, shuffle=True)
-image_dim = dataset[0][0][0].shape
-print(f"image_dim={image_dim}")
-model = GAN(*image_dim)
+dataloader = torch.utils.data.DataLoader(dataset, batch_size=32, shuffle=True)
+image_dim = dataset[0][0].shape
+cat_ctrl_vars = dataset[0][1].shape[0]
+
+model = GAN(*image_dim, cat_ctrl_vars=cat_ctrl_vars)
 trainer = Trainer(gpus=AVAIL_GPUS, max_epochs=20000, progress_bar_refresh_rate=20, )
 trainer.fit(model, dataloader)
