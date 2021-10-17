@@ -78,7 +78,7 @@ class GAN(LightningModule):
         # z = z.type_as(real_imgs)
         c = self.categorical_distribution.sample([batch_size])  # latent space: sample categorical
         c_idx = torch.argmax(c, dim=1)
-        return z, c, c_idx
+        return z.to(self.device), c.to(self.device), c_idx.to(self.device)
 
     def training_step(self, batch, batch_idx, optimizer_idx):
         real_imgs, _ = batch
