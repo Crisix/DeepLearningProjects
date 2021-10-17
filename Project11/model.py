@@ -69,36 +69,38 @@ class MyModel(LightningModule):
         return torch.optim.Adam(self.parameters(), lr=1e-3)
 
 
-data_transforms = transforms.Compose([
-    transforms.Resize([112, 112]),
-    # transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5)),
-    transforms.ToTensor()
-])
-train_data = torchvision.datasets.ImageFolder(
-    root=os.path.abspath("train"),
-    transform=data_transforms)
+if __name__ == '__main__':
+    data_transforms = transforms.Compose([
+        transforms.Resize([112, 112]),
+        # transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5)),
+        transforms.ToTensor()
+    ])
+    train_data = torchvision.datasets.ImageFolder(
+        root=os.path.abspath("train"),
+        transform=data_transforms)
 
-ratio = 0.8
-n_train_examples = int(len(train_data) * ratio)
-n_val_examples = len(train_data) - n_train_examples
+    ratio = 0.8
+    n_train_examples = int(len(train_data) * ratio)
+    n_val_examples = len(train_data) - n_train_examples
 
-train_data, val_data = data.random_split(train_data,
-                                         [n_train_examples,
-                                          n_val_examples])
+    train_data, val_data = data.random_split(train_data,
+                                             [n_train_examples,
+                                              n_val_examples])
 
-BATCH_SIZE = 128
-train_loader = data.DataLoader(train_data,
-                               num_workers=0,
-                               batch_size=BATCH_SIZE)
-val_loader = data.DataLoader(val_data,
-                             num_workers=0,
-                             batch_size=BATCH_SIZE)
+    BATCH_SIZE = 128
+    train_loader = data.DataLoader(train_data,
+                                   num_workers=0,
+                                   batch_size=BATCH_SIZE)
+    val_loader = data.DataLoader(val_data,
+                                 num_workers=0,
+                                 batch_size=BATCH_SIZE)
 
-model = MyModel()
 
-checkpoint = ModelCheckpoint(
-    dirpath=os.path.abspath("checkpoints"),
-    filename='{v_num}--{epoch}-{val_loss:.2f}-{val_acc:.2f}')
+    model = MyModel()
 
-trainer = Trainer(gpus=1, max_epochs=2, callbacks=checkpoint)
-trainer.fit(model, train_dataloaders=train_loader, val_dataloaders=val_loader)
+    checkpoint = ModelCheckpoint(
+        dirpath=os.path.abspath("checkpoints"),
+        filename='{v_num}--{epoch}-{val_loss:.2f}-{val_acc:.2f}')
+
+    trainer = Trainer(gpus=1, max_epochs=2, callbacks=checkpoint)
+    trainer.fit(model, train_dataloaders=train_loader, val_dataloaders=val_loader)
