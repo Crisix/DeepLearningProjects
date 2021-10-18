@@ -6,17 +6,6 @@ from Project11.load_test import load_test_data
 from model import MyModel
 from torchvision import transforms
 
-# with Image.open("test/00000.ppm") as img:
-#     data_transforms = transforms.Compose([
-#         transforms.Resize([112, 112]),
-#         # transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5)),
-#         transforms.ToTensor()
-#     ])
-#     im = data_transforms(img).unsqueeze(0)
-#     res = model(im).detach().numpy()
-#     idx = res.argmax()
-#     print(label_map[f"{idx}"])
-
 label_map = {
     '0': '20_speed',
     '1': '30_speed',
@@ -63,12 +52,13 @@ label_map = {
     '42': 'lifted_no_overtaking_trucks'
 }
 
+
 # FGSM attack code
 def fgsm_attack(image, epsilon, data_grad):
     # Collect the element-wise sign of the data gradient
     sign_data_grad = data_grad.sign()
     # Create the perturbed image by adjusting each pixel of the input image
-    perturbed_image = image + epsilon*sign_data_grad
+    perturbed_image = image + epsilon * sign_data_grad
     # Adding clipping to maintain [0,1] range
     perturbed_image = torch.clamp(perturbed_image, 0, 1)
     # Return the perturbed image
@@ -77,15 +67,13 @@ def fgsm_attack(image, epsilon, data_grad):
 
 if __name__ == '__main__':
     data_transforms = transforms.Compose([
-         transforms.Resize([112, 112]),
-         # transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5)),
-         transforms.ToTensor()
-     ])
+        transforms.Resize([112, 112]),
+        # transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5)),
+        transforms.ToTensor()
+    ])
     model = MyModel.load_from_checkpoint("model_checkpoint.ckpt")
-    model.eval()
     test_data = load_test_data(transform=data_transforms)
-    test_loader = DataLoader(test_data, batch_size=100)
+    test_loader = DataLoader(test_data)
     trainer = Trainer(gpus=1)
     print(trainer.test(model, test_loader))
-
-
+    pass

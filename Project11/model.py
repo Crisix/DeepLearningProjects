@@ -9,6 +9,7 @@ from pytorch_lightning.callbacks import ModelCheckpoint
 from torch.nn import functional as F
 from torch.utils import data
 from torchvision import transforms
+from torchmetrics.functional.classification.accuracy import accuracy
 
 
 class MyModel(LightningModule):
@@ -52,11 +53,12 @@ class MyModel(LightningModule):
         logits = self(x)
         loss = F.cross_entropy(logits, y)
         y_hat = torch.argmax(logits, dim=1)
-        accuracy = torch.sum(y == y_hat).item() / (len(y) * 1.0)
-        output = dict({
+        # accuracy = torch.sum(y == y_hat).item() / (len(y) * 1.0)
+        output = {
             'test_loss': loss,
-            'test_acc': torch.tensor(accuracy),
-        })
+            'accuracy': accuracy(self(x), y),
+        }
+        self.log("acc", accuracy(self(x), y), prog_bar=True, on_epoch=True)
         return output
 
     # def train_dataloader(self):
@@ -95,7 +97,6 @@ if __name__ == '__main__':
                                  num_workers=0,
                                  batch_size=BATCH_SIZE)
 
-
     model = MyModel()
 
     checkpoint = ModelCheckpoint(
@@ -103,4 +104,5 @@ if __name__ == '__main__':
         filename='{v_num}--{epoch}-{val_loss:.2f}-{val_acc:.2f}')
 
     trainer = Trainer(gpus=1, max_epochs=2, callbacks=checkpoint)
-    trainer.fit(model, train_dataloaders=train_loader, val_dataloaders=val_loader)
+    trainer.fit(model, train_dataloaders=train_loader,
+                val_dataloaders=val_loader)
