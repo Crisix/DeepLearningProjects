@@ -9,6 +9,7 @@ from pytorch_lightning.callbacks import ModelCheckpoint
 from torch.nn import functional as F
 from torch.utils import data
 from torchvision import transforms
+from torchmetrics.functional.classification.accuracy import accuracy
 
 
 class MyModel(LightningModule):
@@ -52,11 +53,12 @@ class MyModel(LightningModule):
         logits = self(x)
         loss = F.cross_entropy(logits, y)
         y_hat = torch.argmax(logits, dim=1)
-        accuracy = torch.sum(y == y_hat).item() / (len(y) * 1.0)
-        output = dict({
+        # accuracy = torch.sum(y == y_hat).item() / (len(y) * 1.0)
+        output = {
             'test_loss': loss,
-            'test_acc': torch.tensor(accuracy),
-        })
+            'accuracy': accuracy(self(x), y),
+        }
+        self.log("acc", accuracy(self(x), y), prog_bar=True, on_epoch=True)
         return output
 
     # def train_dataloader(self):
@@ -69,36 +71,38 @@ class MyModel(LightningModule):
         return torch.optim.Adam(self.parameters(), lr=1e-3)
 
 
-data_transforms = transforms.Compose([
-    transforms.Resize([112, 112]),
-    # transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5)),
-    transforms.ToTensor()
-])
-train_data = torchvision.datasets.ImageFolder(
-    root=os.path.abspath("train"),
-    transform=data_transforms)
+if __name__ == '__main__':
+    data_transforms = transforms.Compose([
+        transforms.Resize([112, 112]),
+        # transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5)),
+        transforms.ToTensor()
+    ])
+    train_data = torchvision.datasets.ImageFolder(
+        root=os.path.abspath("train"),
+        transform=data_transforms)
 
-ratio = 0.8
-n_train_examples = int(len(train_data) * ratio)
-n_val_examples = len(train_data) - n_train_examples
+    ratio = 0.8
+    n_train_examples = int(len(train_data) * ratio)
+    n_val_examples = len(train_data) - n_train_examples
 
-train_data, val_data = data.random_split(train_data,
-                                         [n_train_examples,
-                                          n_val_examples])
+    train_data, val_data = data.random_split(train_data,
+                                             [n_train_examples,
+                                              n_val_examples])
 
-BATCH_SIZE = 128
-train_loader = data.DataLoader(train_data,
-                               num_workers=0,
-                               batch_size=BATCH_SIZE)
-val_loader = data.DataLoader(val_data,
-                             num_workers=0,
-                             batch_size=BATCH_SIZE)
+    BATCH_SIZE = 128
+    train_loader = data.DataLoader(train_data,
+                                   num_workers=0,
+                                   batch_size=BATCH_SIZE)
+    val_loader = data.DataLoader(val_data,
+                                 num_workers=0,
+                                 batch_size=BATCH_SIZE)
 
-model = MyModel()
+    model = MyModel()
 
-checkpoint = ModelCheckpoint(
-    dirpath=os.path.abspath("checkpoints"),
-    filename='{v_num}--{epoch}-{val_loss:.2f}-{val_acc:.2f}')
+    checkpoint = ModelCheckpoint(
+        dirpath=os.path.abspath("checkpoints"),
+        filename='{v_num}--{epoch}-{val_loss:.2f}-{val_acc:.2f}')
 
-trainer = Trainer(gpus=1, max_epochs=2, callbacks=checkpoint)
-trainer.fit(model, train_dataloaders=train_loader, val_dataloaders=val_loader)
+    trainer = Trainer(gpus=1, max_epochs=2, callbacks=checkpoint)
+    trainer.fit(model, train_dataloaders=train_loader,
+                val_dataloaders=val_loader)
