@@ -3,6 +3,17 @@
 
 from collections import OrderedDict
 
+"""
+Differences:
+
+eriklindernoren/PyTorch-GAN: 
+    3 optimizers: D, G, Q
+
+Natsu6767/InfoGAN-PyTorch:
+    2 optimizers: D, (G+Q)
+
+"""
+
 import matplotlib.pyplot as plt
 import numpy as np
 import torch
@@ -14,12 +25,29 @@ from pytorch_lightning import LightningModule, Trainer
 from torch.distributions import OneHotCategorical
 from torch.nn import CrossEntropyLoss
 from torchvision.transforms import ToPILImage
+import torchvision.datasets as datasets
+from torchvision.datasets import MNIST
+import os
+from collections import OrderedDict
+
+import numpy as np
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+import torchvision
+import torchvision.transforms as transforms
+from pytorch_lightning import LightningDataModule, LightningModule, Trainer
+from torch.utils.data import DataLoader, random_split
+from torchvision.datasets import MNIST
 
 from Project10.Discriminator import MyDiscriminator, Discriminator
 from Project10.Generator import MyGenerator, Generator
+# from Project10.YaleFacesDataset import YaleFacesDataset
+from Project10.MnistDataset import MNISTDataModule
 from Project10.YaleFacesDataset import YaleFacesDataset
 
-dataroot = "yalefaces"
+DATASET = "mnist"
+# DATASET = "faces"
 
 AVAIL_GPUS = min(1, torch.cuda.device_count())
 
@@ -87,6 +115,20 @@ class GAN(LightningModule):
             return self.train_generator(real_imgs)
         if optimizer_idx == 1:  # train discriminator
             return self.train_discriminator(real_imgs)
+        if optimizer_idx == 2:
+            return self.train_all(real_imgs)
+
+    def train_all(self, real_imgs):
+
+        z, c, c_idx = self.generate_latents(real_imgs.shape[0])
+        cz = torch.hstack([c, z])
+
+        fake_imgs = self.generator(cz)  # .detach()  KEIN DETACH HIER
+        _, cat_pred = self.discriminator(fake_imgs)
+
+        q_loss = self.categorical_loss(cat_pred, c_idx)
+        self.log("q_loss", q_loss, prog_bar=True, on_step=True)
+        return q_loss
 
     def train_discriminator(self, real_imgs):
 
@@ -105,11 +147,11 @@ class GAN(LightningModule):
 
         d_loss = (real_loss + fake_loss) / 2
         q_loss = self.categorical_loss(cat_pred, c_idx)  # TODO IS THIS RIGHT?!?!
-        loss = d_loss + self.hparams.lmbda * q_loss
+        # loss = d_loss + self.hparams.lmbda * q_loss
+        loss = d_loss  # TODO -> so müsste InfoGAN selber entscheiden, was auf welchen Index kommt
 
-        tqdm_dict = {"loss": loss, "d_loss": d_loss, "q_loss": q_loss}
-        output = OrderedDict({"loss": loss, "progress_bar": tqdm_dict, "log": tqdm_dict})
-        return output
+        self.log("d_loss", d_loss, prog_bar=True, on_step=True)
+        return loss
 
     def train_generator(self, real_imgs):
 
@@ -123,23 +165,39 @@ class GAN(LightningModule):
         d_pred, cat_pred = self.discriminator(fake_images)
 
         g_loss = self.adversarial_loss(d_pred, valid)
-        q_loss = self.categorical_loss(cat_pred, c_idx)
-        loss = g_loss + self.hparams.lmbda * q_loss
+        # q_loss = self.categorical_loss(cat_pred, c_idx)
+        loss = g_loss  # + self.hparams.lmbda * q_loss
 
-        tqdm_dict = {"loss": loss, "g_loss": g_loss, "q_loss": q_loss}
-        return OrderedDict({"loss": loss, "progress_bar": tqdm_dict, "log": tqdm_dict})
+        self.log("g_loss", g_loss, prog_bar=True, on_step=True)
+        return loss
 
     def configure_optimizers(self):
         lr = self.hparams.lr
         b1 = self.hparams.b1
         b2 = self.hparams.b2
 
-        opt_g = torch.optim.Adam(self.generator.parameters(), lr=lr, betas=(b1, b2))
-        opt_d = torch.optim.Adam(self.discriminator.parameters(), lr=lr, betas=(b1, b2))
-        return [opt_g, opt_d], []
+        # opt_g = torch.optim.Adam([{'params': self.generator.parameters()},
+        #                           {'params': self.discriminator.Q_net.parameters()}],  # min G, Q
+        #                          lr=lr, betas=(b1, b2))
+        #
+        # opt_d = torch.optim.Adam([{'params': self.discriminator.model.parameters()},
+        #                           {'params': self.discriminator.head.parameters()}],  # max D
+        #                          lr=lr, betas=(b1, b2))
+
+        opt_g = torch.optim.Adam([{'params': self.generator.parameters()}],
+                                 lr=lr, betas=(b1, b2))
+
+        opt_d = torch.optim.Adam([{'params': self.discriminator.parameters()}],
+                                 lr=lr, betas=(b1, b2))
+
+        opt_all = torch.optim.Adam([{'params': self.discriminator.parameters()},
+                                    {'params': self.generator.parameters()}],
+                                   lr=lr, betas=(b1, b2))
+
+        return [opt_g, opt_d, opt_all], []
 
     def on_epoch_end(self):
-        if self.current_epoch % 50 == 0:
+        if self.current_epoch % (50 if DATASET == "faces" else 15) == 0:
             z = self.validation_z.type_as(self.generator.model[0].weight)
 
             # log sampled images
@@ -155,22 +213,29 @@ class GAN(LightningModule):
             ax.xaxis.set_visible(False)
             ax.yaxis.set_visible(False)
 
-            plt.savefig(f"generated_images/{str(self.current_epoch)}.png", bbox_inches='tight', pad_inches=0.1)
+            plt.savefig(f"generated_images/{self.current_epoch}.png", bbox_inches='tight', pad_inches=0.1)
             plt.clf()
 
 
+if DATASET == "faces":
+    transform = transforms.Compose([
+            ToPILImage(),
+            # transforms.Resize((243 // 4, 320 // 4)),  # -> (60, 80)
+            # transforms.Resize((120, 160)),  # /2
+            transforms.ToTensor(),
+            transforms.Normalize((0.5,), (0.5,)),
+    ])
+    dataset = YaleFacesDataset(transform=transform)
+    dataloader = torch.utils.data.DataLoader(dataset, batch_size=32, shuffle=True)
+    image_dim = dataset[0][0].shape
+    cat_ctrl_vars = dataset[0][1].shape[0]
 
-dataset = YaleFacesDataset(transform=transforms.Compose([
-        ToPILImage(),
-        # transforms.Resize((243 // 4, 320 // 4)),  # -> (60, 80)
-        # transforms.Resize((120, 160)),  # /2
-        transforms.ToTensor(),
-        transforms.Normalize((0.5,), (0.5,)),
-]))
-dataloader = torch.utils.data.DataLoader(dataset, batch_size=32, shuffle=True)
-image_dim = dataset[0][0].shape
-cat_ctrl_vars = dataset[0][1].shape[0]
+    model = GAN(*image_dim, cat_ctrl_vars=cat_ctrl_vars)
+    trainer = Trainer(gpus=AVAIL_GPUS, max_epochs=20000)
+    trainer.fit(model, dataloader)
 
-model = GAN(*image_dim, cat_ctrl_vars=cat_ctrl_vars)
-trainer = Trainer(gpus=AVAIL_GPUS, max_epochs=20000, progress_bar_refresh_rate=20, )
-trainer.fit(model, dataloader)
+elif DATASET == "mnist":
+    dm = MNISTDataModule()
+    model = GAN(*dm.size(), cat_ctrl_vars=10, lmbda=0)
+    trainer = Trainer(gpus=AVAIL_GPUS, max_epochs=20000)
+    trainer.fit(model, dm)

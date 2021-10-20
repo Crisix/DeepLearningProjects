@@ -30,5 +30,5 @@ class YaleFacesDataset(Dataset):
         return len(self.imgs)
 
     def __getitem__(self, idx):
-        return self.transform(self.imgs[idx]), \
-               torch.nn.functional.one_hot(torch.tensor(self.onehot_idx.index(self.labels[idx])), len(self.onehot_idx))
+        return self.transform(self.imgs[idx]), self.onehot_idx.index(self.labels[idx])  # self.labels[idx]
+        # torch.nn.functional.one_hot(torch.tensor(self.onehot_idx.index(self.labels[idx])), len(self.onehot_idx))
