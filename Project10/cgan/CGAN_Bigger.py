@@ -34,18 +34,21 @@ parser.add_argument("--latent_dim", type=int, default=100, help="dimensionality 
 parser.add_argument("--n_classes", type=int, default=10, help="number of classes for dataset")
 parser.add_argument("--img_size", type=int, default=32, help="size of each image dimension")
 parser.add_argument("--channels", type=int, default=1, help="number of image channels")
-parser.add_argument("--sample_interval", type=int, default=100, help="interval between image sampling")
+parser.add_argument("--sample_interval", type=int, default=10, help="interval between image sampling")
 opt = parser.parse_args()
 print(opt)
 
 img_shape = (opt.channels, opt.img_size, opt.img_size)
+DATASET = "mnist"
 
 # OURS
+DATASET = "faces"
+
 opt.n_classes = 11
 opt.n_epochs = 200000
 
 CHANNELS_G = 256
-CHANNELS_D = 64
+CHANNELS_D = 256
 
 LR_G = opt.lr
 LR_D = opt.lr / 10
@@ -80,8 +83,8 @@ class ConvGenerator(nn.Module):
     def __init__(self):
         super(ConvGenerator, self).__init__()
 
-        self.label_emb = nn.Embedding(opt.n_classes, 50)
-        self.label_part = nn.Linear(50, 20 * 15)
+        self.label_emb = nn.Embedding(opt.n_classes, opt.n_classes)
+        self.label_part = nn.Linear(opt.n_classes, 20 * 15)
 
         self.latent_part = nn.Linear(opt.latent_dim, 20 * 15 * 16)
         self.upscale_features = nn.Conv2d(16, CHANNELS_G, kernel_size=1, stride=1)
@@ -89,12 +92,15 @@ class ConvGenerator(nn.Module):
         self.model = nn.Sequential(
 
                 nn.ConvTranspose2d(CHANNELS_G + 1, CHANNELS_G, kernel_size=(4, 4), stride=(2, 2), padding=1),  # 40, 30
+                nn.BatchNorm2d(CHANNELS_G),
                 nn.LeakyReLU(),
 
                 nn.ConvTranspose2d(CHANNELS_G, CHANNELS_G, kernel_size=(4, 4), stride=(2, 2), padding=1),  # 80, 60
+                nn.BatchNorm2d(CHANNELS_G),
                 nn.LeakyReLU(),
 
                 nn.ConvTranspose2d(CHANNELS_G, CHANNELS_G, kernel_size=(4, 4), stride=(2, 2), padding=1),  # 160, 120
+                nn.BatchNorm2d(CHANNELS_G),
                 nn.LeakyReLU(),
 
                 nn.Conv2d(CHANNELS_G, 1, kernel_size=(7, 7), padding=3),
@@ -116,21 +122,24 @@ class ConvDiscriminator(nn.Module):
     def __init__(self):
         super(ConvDiscriminator, self).__init__()
 
-        self.label_embedding = nn.Embedding(opt.n_classes, 50)
-        self.label_part = nn.Linear(50, w * h)  # TODO nur hochskalieren?
+        self.label_embedding = nn.Embedding(opt.n_classes, opt.n_classes)
+        self.label_part = nn.Linear(opt.n_classes, w * h)  # TODO nur hochskalieren?
 
         self.model = nn.Sequential(
                 nn.Conv2d(2, CHANNELS_D, kernel_size=(4, 4), stride=(2, 2), padding=1),  # 80, 60
+                nn.BatchNorm2d(CHANNELS_D),
                 nn.LeakyReLU(0.2, inplace=True),
 
                 nn.Conv2d(CHANNELS_D, CHANNELS_D, kernel_size=(4, 4), stride=(2, 2), padding=1),  # 40, 30
+                nn.BatchNorm2d(CHANNELS_D),
                 nn.LeakyReLU(0.2, inplace=True),
 
                 nn.Conv2d(CHANNELS_D, CHANNELS_D, kernel_size=(4, 4), stride=(2, 2), padding=1),  # 20, 15
+                nn.BatchNorm2d(CHANNELS_D),
                 nn.LeakyReLU(0.2, inplace=True),
 
                 nn.Flatten(),  # 20 * 15 * 64
-                nn.Dropout(),
+                # nn.Dropout(),
 
                 nn.Linear(20 * 15 * CHANNELS_D, 1),
                 nn.Sigmoid()
@@ -142,6 +151,61 @@ class ConvDiscriminator(nn.Module):
         return self.model(concat)
 
 
+class Discriminator(nn.Module):
+    def __init__(self):
+        super(Discriminator, self).__init__()
+
+        self.label_embedding = nn.Embedding(opt.n_classes, opt.n_classes)
+
+        self.model = nn.Sequential(
+                nn.Linear(opt.n_classes + int(np.prod(img_shape)), 512),
+                nn.LeakyReLU(0.2, inplace=True),
+                nn.Linear(512, 512),
+                nn.Dropout(0.4),
+                nn.LeakyReLU(0.2, inplace=True),
+                nn.Linear(512, 512),
+                nn.Dropout(0.4),
+                nn.LeakyReLU(0.2, inplace=True),
+                nn.Linear(512, 1),
+        )
+
+    def forward(self, img, labels):
+        # Concatenate label embedding and image to produce input
+        d_in = torch.cat((img.view(img.size(0), -1), self.label_embedding(labels)), -1)
+        validity = self.model(d_in)
+        return validity
+
+
+class Generator(nn.Module):
+    def __init__(self):
+        super(Generator, self).__init__()
+
+        self.label_emb = nn.Embedding(num_embeddings=opt.n_classes, embedding_dim=opt.n_classes)
+
+        def block(in_feat, out_feat, normalize=True):
+            layers = [nn.Linear(in_feat, out_feat)]
+            if normalize:
+                layers.append(nn.BatchNorm1d(out_feat, 0.8))
+            layers.append(nn.LeakyReLU(0.2, inplace=True))
+            return layers
+
+        self.model = nn.Sequential(
+                *block(opt.latent_dim + opt.n_classes, 128, normalize=False),
+                *block(128, 256),
+                *block(256, 512),
+                *block(512, 1024),
+                nn.Linear(1024, int(np.prod(img_shape))),
+                nn.Tanh()
+        )
+
+    def forward(self, noise, labels):
+        # Concatenate label embedding and image to produce input
+        gen_input = torch.cat((self.label_emb(labels), noise), -1)
+        img = self.model(gen_input)
+        img = img.view(img.size(0), *img_shape)
+        return img
+
+
 # Loss functions
 adversarial_loss = torch.nn.MSELoss()
 
@@ -149,10 +213,11 @@ adversarial_loss = torch.nn.MSELoss()
 generator = ConvGenerator()
 discriminator = ConvDiscriminator()
 
-print("Generator:")
-summary(generator)
-print("Discriminator:")
-summary(discriminator)
+# print("USING NORMAL NETWORKS WARNING!!!")
+# generator = Generator()
+# discriminator = Discriminator()
+
+summary(nn.ModuleList([generator, discriminator]))
 
 # generator = Generator()
 # discriminator = Discriminator()
@@ -161,9 +226,6 @@ if cuda:
     generator.cuda()
     discriminator.cuda()
     adversarial_loss.cuda()
-
-DATASET = "faces"
-# DATASET = "mnist"
 
 if DATASET == "faces":
 
@@ -228,16 +290,18 @@ optimizer_D = torch.optim.Adam(discriminator.parameters(), lr=LR_D, betas=(opt.b
 FloatTensor = torch.cuda.FloatTensor if cuda else torch.FloatTensor
 LongTensor = torch.cuda.LongTensor if cuda else torch.LongTensor
 
+n_row = 13
+# Sample noise (outside of sample_image so z stays constant over generated images)
+sample_img_z = Variable(FloatTensor(np.random.normal(0, 1, (n_row * opt.n_classes, opt.latent_dim))))
+# Get labels ranging from 0 to n_classes for n rows
+sample_img_labels = np.array([num for num in range(opt.n_classes) for _ in range(n_row)])
 
-def sample_image(n_row, batches_done):
+
+def sample_image(epochs_done):
     """Saves a grid of generated digits ranging from 0 to n_classes"""
-    # Sample noise
-    z = Variable(FloatTensor(np.random.normal(0, 1, (n_row * opt.n_classes, opt.latent_dim))))
-    # Get labels ranging from 0 to n_classes for n rows
-    labels = np.array([num for num in range(n_row) for _ in range(opt.n_classes)])
-    labels = Variable(LongTensor(labels))
-    gen_imgs = generator(z, labels)
-    save_image(gen_imgs.data, "images/%d.png" % batches_done, nrow=opt.n_classes, normalize=True)
+    labels = Variable(LongTensor(sample_img_labels))
+    gen_imgs = generator(sample_img_z, labels)
+    save_image(gen_imgs.data, "images/%d.png" % epochs_done, nrow=n_row, normalize=True)
 
 
 # ----------
@@ -302,6 +366,14 @@ for epoch in range(opt.n_epochs):
                 % (epoch, opt.n_epochs, i, len(dataloader), d_loss.item(), g_loss.item())
         )
 
+        if epoch % 50 == 0:
+            torch.save(discriminator, f"discriminator_{epoch}.pth")
+            torch.save(generator, f"generator_{epoch}.pth")
+
         batches_done = epoch * len(dataloader) + i
-        if batches_done % opt.sample_interval == 0:
-            sample_image(n_row=10, batches_done=batches_done)
+        if epoch % opt.sample_interval == 0:
+            sample_image(epochs_done=epoch)
+
+        # batches_done = epoch * len(dataloader) + i
+        # if batches_done % opt.sample_interval == 0:
+        #     sample_image(n_row=10, batches_done=batches_done, epochs_done=epoch)
