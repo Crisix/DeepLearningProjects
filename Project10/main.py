@@ -1,241 +1,343 @@
-# CODE IS FROM/BASED FROM:
-# https://pytorch-lightning.readthedocs.io/en/latest/notebooks/lightning_examples/basic-gan.html
-
-from collections import OrderedDict
-
-"""
-Differences:
-
-eriklindernoren/PyTorch-GAN: 
-    3 optimizers: D, G, Q
-
-Natsu6767/InfoGAN-PyTorch:
-    2 optimizers: D, (G+Q)
-
-"""
-
-import matplotlib.pyplot as plt
-import numpy as np
-import torch
-import torch.nn.functional as F
-import torch.utils.data
-import torchvision
-import torchvision.transforms as transforms
-from pytorch_lightning import LightningModule, Trainer
-from torch.distributions import OneHotCategorical
-from torch.nn import CrossEntropyLoss
-from torchvision.transforms import ToPILImage
-import torchvision.datasets as datasets
-from torchvision.datasets import MNIST
+# CODE FROM:
+# https://github.com/eriklindernoren/PyTorch-GAN/blob/master/implementations/cgan/cgan.py
+import argparse
 import os
-from collections import OrderedDict
-
 import numpy as np
-import torch
+import math
+from torchinfo import summary
+
+import torchvision.transforms as transforms
+from torchvision.transforms import ToPILImage
+from torchvision.utils import save_image
+import matplotlib.pyplot as plt
+from torch.utils.data import DataLoader
+from torchvision import datasets
+from torch.autograd import Variable
+import os
+
+from PIL import Image
+from torch.utils.data import Dataset
 import torch.nn as nn
 import torch.nn.functional as F
-import torchvision
-import torchvision.transforms as transforms
-from pytorch_lightning import LightningDataModule, LightningModule, Trainer
-from torch.utils.data import DataLoader, random_split
-from torchvision.datasets import MNIST
+import torch
 
-from Project10.Discriminator import MyDiscriminator, Discriminator
-from Project10.Generator import MyGenerator, Generator
-# from Project10.YaleFacesDataset import YaleFacesDataset
-from Project10.MnistDataset import MNISTDataModule
-from Project10.YaleFacesDataset import YaleFacesDataset
+os.makedirs("images", exist_ok=True)
+# os.makedirs("images_random_z", exist_ok=True)
 
-DATASET = "mnist"
-# DATASET = "faces"
+"""
+digraph G {
+  concentrate=True;
+  rankdir=TB;
+  node [shape=record];
+  
+  labelInput [label="{Label | (batch)}"];
+  labelEmbedding [label="{Label Embedding | (batch, 11)}"];
+  labelLinear [label="{Linear | (batch, 15 * 20) }"];
+  labelReshape [label="{Reshape | (batch, 1, 15, 20)}"]
+  
+  latentV [label="{Latent Variable | (batch, 100) }"]
+  latentLinear [label="{Linear \n Leaky ReLu | (batch, 16 * 15 * 20)}"]
+  latentUpscale [label="{2D Convolution (1x1 kernel, stride 1) | (batch, 256, 15, 20)}"]
+  latentReshape [label="{Reshape | (batch, 16, 15 ,20)}"]
+  
+  Concat [label="{Concat | (batch, 257 channels,  15 pixel height,  20 pixel width)}"]
+  
+  labelInput -> labelEmbedding;
+  labelEmbedding -> labelLinear;
+  labelLinear -> labelReshape;
+  
+  latentV -> latentLinear;
+  latentLinear -> latentReshape;
+  latentReshape -> latentUpscale;
+  
+  latentUpscale -> Concat;
+  labelReshape -> Concat;
+  
+  
+  convT1 [label="{Transposed 2D Convolution (4x4 kernel, stride 2) \n 2D BatchNorm \n Leaky ReLu | (batch, 256, 30, 40)}"]
+  convT2 [label="{Transposed 2D Convolution (4x4 kernel, stride 2) \n 2D BatchNorm \n Leaky ReLu | (batch, 256, 60, 80)}"]
+  convT3 [label="{Transposed 2D Convolution (4x4 kernel, stride 2) \n 2D BatchNorm \n Leaky ReLu | (batch, 256, 120, 160)}"]
+  conv4 [label="{2D Convolution (7x7 kernel, stride 1) \n Tanh | (batch, 1, 120, 160)}"]
+  
+  Concat -> convT1;
+  convT1 -> convT2;
+  convT2 -> convT3;
+  convT3 -> conv4;
+  
+}
+"""
 
-AVAIL_GPUS = min(1, torch.cuda.device_count())
+parser = argparse.ArgumentParser()
+parser.add_argument("--n_epochs", type=int, default=200, help="number of epochs of training")
+parser.add_argument("--batch_size", type=int, default=64, help="size of the batches")
+parser.add_argument("--lr", type=float, default=0.0002, help="adam: learning rate")
+parser.add_argument("--b1", type=float, default=0.5, help="adam: decay of first order momentum of gradient")
+parser.add_argument("--b2", type=float, default=0.999, help="adam: decay of first order momentum of gradient")
+parser.add_argument("--n_cpu", type=int, default=8, help="number of cpu threads to use during batch generation")
+parser.add_argument("--latent_dim", type=int, default=100, help="dimensionality of the latent space")
+parser.add_argument("--n_classes", type=int, default=10, help="number of classes for dataset")
+parser.add_argument("--img_size", type=int, default=32, help="size of each image dimension")
+parser.add_argument("--channels", type=int, default=1, help="number of image channels")
+parser.add_argument("--sample_interval", type=int, default=50, help="interval between image sampling")
+opt = parser.parse_args()
+print(opt)
+
+# img_shape = (opt.channels, opt.img_size, opt.img_size)
+# DATASET = "mnist"
 
 
-class GAN(LightningModule):
-    def __init__(
-            self,
-            channels,
-            width,
-            height,
-            cat_ctrl_vars=None,
-            lmbda=1.0,
-            latent_dim: int = 100,
-            lr: float = 0.0002,
-            b1: float = 0.5,
-            b2: float = 0.999,
-            batch_size: int = 1,
-            **kwargs
-    ):
-        super().__init__()
-        self.save_hyperparameters()
+DATASET = "faces"
 
-        # networks
-        data_shape = (channels, width, height)
+opt.n_classes = 11
+opt.n_epochs = 200000
 
-        self.categorical_distribution = OneHotCategorical(torch.tensor([1] * cat_ctrl_vars))
+CHANNELS_G = 128
+CHANNELS_D = 128
 
-        latent = self.hparams.latent_dim + cat_ctrl_vars
-        # self.generator = MyGenerator(latent_dim=latent, img_shape=data_shape)  # 20.9 M
-        # self.discriminator = MyDiscriminator(img_shape=data_shape, cat_ctrl_vars=cat_ctrl_vars)  # 5.2 M
+LR_G = opt.lr
+LR_D = opt.lr / 2
 
-        self.generator = Generator(latent_dim=latent, img_shape=data_shape)  # 20.4 M
-        self.discriminator = Discriminator(img_shape=data_shape, cat_ctrl_vars=cat_ctrl_vars)  # 10.0 M
+# Original: w, h = 320, 243
+w = 160
+h = 120
 
-        # self.validation_z = torch.randn(8, self.hparams.latent_dim)
-        rows = 8
-        self.num_classes = cat_ctrl_vars
-        z = self.generate_latents(rows)[0]
+w, h = h, w
 
-        self.validation_z = torch.hstack([z.repeat_interleave(cat_ctrl_vars, 0),
-                                          torch.eye(cat_ctrl_vars).repeat(rows, 1)])
+img_shape = (opt.channels, w, h)
+opt.img_size = (w, h)
 
-        # self.example_input_array = torch.zeros(2, self.hparams.latent_dim)
+cuda = True if torch.cuda.is_available() else False
+num_workers = 3 if cuda else 0
 
-    def forward(self, z):
-        return self.generator(z)
+print(f"CHANNELS_G={CHANNELS_G}")
+print(f"CHANNELS_D={CHANNELS_D}")
+print(f"LR_G={LR_G}")
+print(f"LR_D={LR_D}")
 
-    def adversarial_loss(self, y_hat, y):
-        return F.binary_cross_entropy(y_hat, y)
 
-    def categorical_loss(self, y_hat, y):
-        return F.cross_entropy(y_hat, y)
+class ConvGenerator(nn.Module):
+    def __init__(self):
+        super(ConvGenerator, self).__init__()
 
-    def generate_latents(self, batch_size):
-        z = torch.randn(batch_size, self.hparams.latent_dim)  # latent space: sample noise
-        # z = z.type_as(real_imgs)
-        c = self.categorical_distribution.sample([batch_size])  # latent space: sample categorical
-        c_idx = torch.argmax(c, dim=1)
-        return z.to(self.device), c.to(self.device), c_idx.to(self.device)
+        self.label_emb = nn.Embedding(opt.n_classes, 64)
+        self.label_part = nn.Linear(64, 20 * 15)
 
-    def training_step(self, batch, batch_idx, optimizer_idx):
-        real_imgs, _ = batch
+        self.latent_part = nn.Linear(opt.latent_dim, 20 * 15 * 16)
+        self.upscale_features = nn.Conv2d(16, CHANNELS_G, kernel_size=1, stride=1)
 
-        if optimizer_idx == 0:  # train generator
-            return self.train_generator(real_imgs)
-        if optimizer_idx == 1:  # train discriminator
-            return self.train_discriminator(real_imgs)
-        if optimizer_idx == 2:
-            return self.train_all(real_imgs)
+        self.model = nn.Sequential(
 
-    def train_all(self, real_imgs):
+                nn.ConvTranspose2d(CHANNELS_G + 1, CHANNELS_G, kernel_size=(4, 4), stride=(2, 2), padding=1),  # 40, 30
+                nn.LeakyReLU(),
 
-        z, c, c_idx = self.generate_latents(real_imgs.shape[0])
-        cz = torch.hstack([c, z])
+                nn.ConvTranspose2d(CHANNELS_G, CHANNELS_G, kernel_size=(4, 4), stride=(2, 2), padding=1),  # 80, 60
+                nn.LeakyReLU(),
 
-        fake_imgs = self.generator(cz)  # .detach()  KEIN DETACH HIER
-        _, cat_pred = self.discriminator(fake_imgs)
+                nn.ConvTranspose2d(CHANNELS_G, CHANNELS_G, kernel_size=(4, 4), stride=(2, 2), padding=1),  # 160, 120
+                nn.LeakyReLU(),
 
-        q_loss = self.categorical_loss(cat_pred, c_idx)
-        self.log("q_loss", q_loss, prog_bar=True, on_step=True)
-        return q_loss
+                nn.Conv2d(CHANNELS_G, 1, kernel_size=(7, 7), padding=3),
+                nn.Tanh()
+        )
 
-    def train_discriminator(self, real_imgs):
+    def process_latent(self, noise):
+        small_featuremap = F.leaky_relu(self.latent_part(noise)).view(-1, 16, 15, 20)
+        return self.upscale_features(small_featuremap)
 
-        z, c, c_idx = self.generate_latents(real_imgs.shape[0])
-        cz = torch.hstack([c, z])
+    def forward(self, noise, labels):
+        lbl_2d = self.label_part(self.label_emb(labels)).view(-1, 1, 15, 20)
+        latent_2d = self.process_latent(noise)
+        concat = torch.hstack([lbl_2d, latent_2d])
+        return self.model(concat)
 
-        # Measure discriminator's ability to classify real from generated samples
-        valid = torch.ones(real_imgs.size(0), 1).type_as(real_imgs)
-        d_pred, _ = self.discriminator(real_imgs)
-        real_loss = self.adversarial_loss(d_pred, valid)
 
-        fake = torch.zeros(real_imgs.size(0), 1).type_as(real_imgs)
-        fake_imgs = self.generator(cz).detach()  # dont train generator -> detach
-        d_pred, cat_pred = self.discriminator(fake_imgs)
-        fake_loss = self.adversarial_loss(d_pred, fake)
+class ConvDiscriminator(nn.Module):
+    def __init__(self):
+        super(ConvDiscriminator, self).__init__()
 
-        d_loss = (real_loss + fake_loss) / 2
-        q_loss = self.categorical_loss(cat_pred, c_idx)  # TODO IS THIS RIGHT?!?!
-        # loss = d_loss + self.hparams.lmbda * q_loss
-        loss = d_loss  # TODO -> so müsste InfoGAN selber entscheiden, was auf welchen Index kommt
+        self.label_embedding = nn.Embedding(opt.n_classes, 64)
+        self.label_part = nn.Linear(64, w * h)
 
-        self.log("d_loss", d_loss, prog_bar=True, on_step=True)
-        return loss
+        self.model = nn.Sequential(
+                nn.Conv2d(2, CHANNELS_D, kernel_size=(4, 4), stride=(2, 2), padding=1),  # 80, 60
+                nn.LeakyReLU(0.2, inplace=True),
+                # nn.BatchNorm2d(CHANNELS_D),
 
-    def train_generator(self, real_imgs):
+                nn.Conv2d(CHANNELS_D, CHANNELS_D, kernel_size=(4, 4), stride=(2, 2), padding=1),  # 40, 30
+                nn.LeakyReLU(0.2, inplace=True),
+                # nn.BatchNorm2d(CHANNELS_D),
 
-        z, c, c_idx = self.generate_latents(real_imgs.shape[0])
-        cz = torch.hstack([c, z])
+                nn.Conv2d(CHANNELS_D, CHANNELS_D, kernel_size=(4, 4), stride=(2, 2), padding=1),  # 20, 15
+                nn.LeakyReLU(0.2, inplace=True),
+                # nn.BatchNorm2d(CHANNELS_D),
 
-        # ground truth result (ie: all fake)
-        valid = torch.ones(real_imgs.size(0), 1).type_as(real_imgs)
-        fake_images = self.generator(cz)
-        # TODO sollte der discriminator hier nicht fixed sein?
-        d_pred, cat_pred = self.discriminator(fake_images)
+                nn.Flatten(),  # 20 * 15 * 64
+                nn.Dropout(),
 
-        g_loss = self.adversarial_loss(d_pred, valid)
-        # q_loss = self.categorical_loss(cat_pred, c_idx)
-        loss = g_loss  # + self.hparams.lmbda * q_loss
+                nn.Linear(20 * 15 * CHANNELS_D, 1),
+                nn.Sigmoid()
+        )
 
-        self.log("g_loss", g_loss, prog_bar=True, on_step=True)
-        return loss
+    def forward(self, img, labels):
+        lbl_2d = self.label_part(self.label_embedding(labels)).view(-1, 1, w, h)
+        concat = torch.hstack([lbl_2d, img])  # 2, 60, 80
+        return self.model(concat)
 
-    def configure_optimizers(self):
-        lr = self.hparams.lr
-        b1 = self.hparams.b1
-        b2 = self.hparams.b2
 
-        # opt_g = torch.optim.Adam([{'params': self.generator.parameters()},
-        #                           {'params': self.discriminator.Q_net.parameters()}],  # min G, Q
-        #                          lr=lr, betas=(b1, b2))
-        #
-        # opt_d = torch.optim.Adam([{'params': self.discriminator.model.parameters()},
-        #                           {'params': self.discriminator.head.parameters()}],  # max D
-        #                          lr=lr, betas=(b1, b2))
+# Original: torch.nn.MSELoss()
+adversarial_loss = torch.nn.BCELoss()
+print(f"adversarial_loss={adversarial_loss}")
 
-        opt_g = torch.optim.Adam([{'params': self.generator.parameters()}],
-                                 lr=lr, betas=(b1, b2))
+# Initialize generator and discriminator
+generator = ConvGenerator()
+discriminator = ConvDiscriminator()
 
-        opt_d = torch.optim.Adam([{'params': self.discriminator.parameters()}],
-                                 lr=lr, betas=(b1, b2))
+summary(nn.ModuleList([generator, discriminator]))
 
-        opt_all = torch.optim.Adam([{'params': self.discriminator.parameters()},
-                                    {'params': self.generator.parameters()}],
-                                   lr=lr, betas=(b1, b2))
-
-        return [opt_g, opt_d, opt_all], []
-
-    def on_epoch_end(self):
-        if self.current_epoch % (50 if DATASET == "faces" else 15) == 0:
-            z = self.validation_z.type_as(self.generator.model[0].weight)
-
-            # log sampled images
-            sample_imgs = self(z)
-            grid = torchvision.utils.make_grid(sample_imgs, range=(-1, 1), nrow=self.num_classes)
-            self.logger.experiment.add_image("generated_images", grid, self.current_epoch)
-
-            # Copied from https://www.programcreek.com/python/?code=lukasruff%2FDeep-SAD-PyTorch%2FDeep-SAD-PyTorch-master%2Fsrc%2Futils%2Fvisualization%2Fplot_images_grid.py
-            npgrid = grid.cpu().detach().numpy()
-            plt.figure(figsize=(25, 25))
-            plt.imshow(np.transpose(npgrid, (1, 2, 0)), interpolation='nearest')
-            ax = plt.gca()
-            ax.xaxis.set_visible(False)
-            ax.yaxis.set_visible(False)
-
-            plt.savefig(f"generated_images/{self.current_epoch}.png", bbox_inches='tight', pad_inches=0.1)
-            plt.clf()
-
+if cuda:
+    generator.cuda()
+    discriminator.cuda()
+    adversarial_loss.cuda()
 
 if DATASET == "faces":
-    transform = transforms.Compose([
-            ToPILImage(),
-            # transforms.Resize((243 // 4, 320 // 4)),  # -> (60, 80)
-            # transforms.Resize((120, 160)),  # /2
-            transforms.ToTensor(),
-            transforms.Normalize((0.5,), (0.5,)),
-    ])
-    dataset = YaleFacesDataset(transform=transform)
-    dataloader = torch.utils.data.DataLoader(dataset, batch_size=32, shuffle=True)
-    image_dim = dataset[0][0].shape
-    cat_ctrl_vars = dataset[0][1].shape[0]
 
-    model = GAN(*image_dim, cat_ctrl_vars=cat_ctrl_vars)
-    trainer = Trainer(gpus=AVAIL_GPUS, max_epochs=20000)
-    trainer.fit(model, dataloader)
+    # delete subject01.glasses.gif, because it seems to be a duplicate of subject01.glasses and does not match the naming scheme.
+    # rename subject01.gif to subject01.centerlight, because it does not match the naming scheme and subject01 does not have a centerlight shot.
+    class YaleFacesDataset(Dataset):
+        def __init__(self, transform=None):
+            self.img_dir = "yalefaces"
+            self.transform = transform
+            self.imgs = []
+            self.labels = []
+            self.subjects = []
+            img_paths = os.listdir(self.img_dir)
+            for img in img_paths:
+                if img == "Readme.txt" or img == ".DS_Store":
+                    continue
+                split = img.split(".")
+                self.subjects.append(split[0])
+                self.labels.append(split[1])
+                self.imgs.append(self.transform(np.asarray(Image.open(os.path.join(self.img_dir, img)))))
+            self.onehot_idx = list(set(self.labels))
+
+            print(f"{len(self.imgs)} images")
+            print(f"Labels: {self.onehot_idx}")
+
+        def __len__(self):
+            return len(self.imgs)
+
+        def __getitem__(self, idx):
+            return self.imgs[idx], self.onehot_idx.index(self.labels[idx])  # self.labels[idx]
+            # torch.nn.functional.one_hot(torch.tensor(self.onehot_idx.index(self.labels[idx])), len(self.onehot_idx))
+
+
+    dataset = YaleFacesDataset(transform=transforms.Compose(
+            [
+                    ToPILImage(),
+                    transforms.Resize(opt.img_size),
+                    transforms.ToTensor(),
+                    transforms.Normalize([0.5], [0.5])
+            ]
+    ), )
+    dataloader = torch.utils.data.DataLoader(dataset, batch_size=opt.batch_size, shuffle=True, num_workers=num_workers)
 
 elif DATASET == "mnist":
-    dm = MNISTDataModule()
-    model = GAN(*dm.size(), cat_ctrl_vars=10, lmbda=0)
-    trainer = Trainer(gpus=AVAIL_GPUS, max_epochs=20000)
-    trainer.fit(model, dm)
+    # Configure data loader
+    os.makedirs("../../data/mnist", exist_ok=True)
+    dataloader = torch.utils.data.DataLoader(
+            datasets.MNIST(
+                    "../../data/mnist",
+                    train=True,
+                    download=True,
+                    transform=transforms.Compose(
+                            [transforms.Resize(opt.img_size), transforms.ToTensor(), transforms.Normalize([0.5], [0.5])]
+                    ),
+            ),
+            batch_size=opt.batch_size,
+            shuffle=True,
+    )
+
+optimizer_G = torch.optim.Adam(generator.parameters(), lr=LR_G, betas=(opt.b1, opt.b2))
+optimizer_D = torch.optim.Adam(discriminator.parameters(), lr=LR_D, betas=(opt.b1, opt.b2))
+
+FloatTensor = torch.cuda.FloatTensor if cuda else torch.FloatTensor
+LongTensor = torch.cuda.LongTensor if cuda else torch.LongTensor
+
+n_row = 15
+# Sample noise (outside of sample_image so z stays constant over generated images)
+sample_img_z = Variable(FloatTensor(np.random.normal(0, 1, (n_row * opt.n_classes, opt.latent_dim))))
+# Get labels ranging from 0 to n_classes for n rows
+sample_img_labels = np.array([num for num in range(opt.n_classes) for _ in range(n_row)])
+
+
+def sample_image(epochs_done):
+    """Saves a grid of generated digits ranging from 0 to n_classes"""
+    labels = Variable(LongTensor(sample_img_labels))
+    gen_imgs = generator(sample_img_z, labels)
+    save_image(gen_imgs.data, f"images/{epochs_done:d}.png", nrow=n_row, normalize=True)
+
+
+#  Training
+for epoch in range(opt.n_epochs):
+    for i, (imgs, labels) in enumerate(dataloader):
+
+        batch_size = imgs.shape[0]
+
+        # Adversarial ground truths
+        valid = Variable(FloatTensor(batch_size, 1).fill_(1.0), requires_grad=False)
+        fake = Variable(FloatTensor(batch_size, 1).fill_(0.0), requires_grad=False)
+
+        # Configure input
+        real_imgs = Variable(imgs.type(FloatTensor))
+        labels = Variable(labels.type(LongTensor))
+
+        # -----------------
+        #  Train Generator
+        # -----------------
+
+        optimizer_G.zero_grad()
+
+        # Sample noise and labels as generator input
+        z = Variable(FloatTensor(np.random.normal(0, 1, (batch_size, opt.latent_dim))))
+        gen_labels = Variable(LongTensor(np.random.randint(0, opt.n_classes, batch_size)))
+
+        # Generate a batch of images
+        gen_imgs = generator(z, gen_labels)
+
+        # Loss measures generator's ability to fool the discriminator
+        validity = discriminator(gen_imgs, gen_labels)
+        g_loss = adversarial_loss(validity, valid)
+
+        g_loss.backward()
+        optimizer_G.step()
+
+        # ---------------------
+        #  Train Discriminator
+        # ---------------------
+
+        optimizer_D.zero_grad()
+
+        # Loss for real images
+        validity_real = discriminator(real_imgs, labels)
+        d_real_loss = adversarial_loss(validity_real, valid)
+
+        # Loss for fake images
+        validity_fake = discriminator(gen_imgs.detach(), gen_labels)
+        d_fake_loss = adversarial_loss(validity_fake, fake)
+
+        # Total discriminator loss
+        d_loss = (d_real_loss + d_fake_loss) / 2
+
+        d_loss.backward()
+        optimizer_D.step()
+
+        print("[Epoch %d/%d] [Batch %d/%d] [D loss: %f] [G loss: %f]" % (epoch, opt.n_epochs, i, len(dataloader), d_loss.item(), g_loss.item()))
+
+        if epoch % 1000 == 0:
+            torch.save(discriminator, f"discriminator_{epoch}.pth")
+            torch.save(generator, f"generator_{epoch}.pth")
+
+        if epoch % opt.sample_interval == 0:
+            with torch.no_grad():
+                sample_image(epochs_done=epoch)
+                # old_sample_image(n_row=n_row, epochs_done=epoch)
