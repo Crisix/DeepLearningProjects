@@ -1,4 +1,5 @@
 import torch
+import torchattacks
 from pytorch_lightning import Trainer
 from torch.utils.data import DataLoader
 
@@ -65,15 +66,22 @@ def fgsm_attack(image, epsilon, data_grad):
     return perturbed_image
 
 
-if __name__ == '__main__':
-    data_transforms = transforms.Compose([
-        transforms.Resize([112, 112]),
-        # transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5)),
-        transforms.ToTensor()
-    ])
-    model = MyModel.load_from_checkpoint("model_checkpoint.ckpt")
-    test_data = load_test_data(transform=data_transforms)
-    test_loader = DataLoader(test_data)
-    trainer = Trainer(gpus=1)
-    print(trainer.test(model, test_loader))
-    pass
+
+data_transforms = transforms.Compose([
+    transforms.Resize([112, 112]),
+    # transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5)),
+    transforms.ToTensor()
+])
+model = MyModel.load_from_checkpoint("model_checkpoint.ckpt")
+test_data = load_test_data(transform=data_transforms)
+test_loader = DataLoader(test_data, batch_size=100)
+fgsms = torchattacks.FGSM(model,)
+images, _ = zip(*test_data.image_labels[:50])
+predicted_labels = model(torch.vstack([x.unsqueeze(0) for x in images])).argmax(dim=1)
+adversarial_examples = fgsms(torch.vstack([x.unsqueeze(0) for x in images]),
+                             predicted_labels)
+trainer = Trainer(gpus=1)
+model(adversarial_examples)
+model(adversarial_examples).argmax(dim=1) != predicted_labels
+print(trainer.test(model, test_loader))
+

@@ -12,3 +12,5 @@ torchaudio==0.9.1
 Pillow==8.3.2
 pytorch-lightning==1.4.9
 cleverhans==4.0.0
+
+torchattacks==3.2.1

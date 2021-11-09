@@ -10,12 +10,14 @@ from torch.nn import functional as F
 from torch.utils import data
 from torchvision import transforms
 from torchmetrics.functional.classification.accuracy import accuracy
+import torchattacks
 
 
 class MyModel(LightningModule):
     def __init__(self):
         super().__init__()
         num_target_classes = 43
+        self.accs = []
 
         backbone = models.resnet18(pretrained=True)
         num_filters = backbone.fc.in_features
@@ -59,6 +61,7 @@ class MyModel(LightningModule):
             'accuracy': accuracy(self(x), y),
         }
         self.log("acc", accuracy(self(x), y), prog_bar=True, on_epoch=True)
+        self.accs.append(accuracy(self(x), y))
         return output
 
     # def train_dataloader(self):
