@@ -58,10 +58,10 @@ class MyModel(LightningModule):
         # accuracy = torch.sum(y == y_hat).item() / (len(y) * 1.0)
         output = {
             'test_loss': loss,
-            'accuracy': accuracy(self(x), y),
+            'accuracy': accuracy(y_hat, y),
         }
-        self.log("acc", accuracy(self(x), y), prog_bar=True, on_epoch=True)
-        self.accs.append(accuracy(self(x), y))
+        self.log("acc", accuracy(y_hat, y), prog_bar=True, on_epoch=True)
+        self.accs.append(accuracy(y_hat, y))
         return output
 
     # def train_dataloader(self):

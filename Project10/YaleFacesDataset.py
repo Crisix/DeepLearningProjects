@@ -10,7 +10,7 @@ from torch.utils.data import Dataset
 # subject01.gif renamed to subject01.centerlight, because it does not match the naming scheme and subject01 does not have a centerlight shot.
 class YaleFacesDataset(Dataset):
     def __init__(self, transform=None):
-        self.img_dir = "yalefaces"
+        self.img_dir = "./yalefaces"
         self.transform = transform
         self.imgs = []
         self.labels = []
