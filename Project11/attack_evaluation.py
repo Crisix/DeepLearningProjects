@@ -12,15 +12,20 @@ from utils import label_map
 from torchvision import transforms
 from torchvision.utils import save_image
 
-
 eval_definition = namedtuple('eval_definition', 'attack options number_runs')
-
 
 # put different arguments in a list, that the script should evaluate
 fgsm_attack = eval_definition(torchattacks.FGSM, {'eps': [0.0035, 0.007, 0.015, 0.03, 0.06, 0.12, 0.24, 0.5]}, 8)
-one_pixel_attack = eval_definition(torchattacks.OnePixel, {'pixels': 10, 'steps': 75, 'popsize': 100, 'inf_batch': 32}, 1)
-deep_fool_attack = eval_definition(torchattacks.DeepFool, {'steps': 50, 'overshoot': 0.02}, 1)
-auto_attack = eval_definition(torchattacks.AutoAttack, {'norm': 'Linf', 'eps': .05, 'version': 'standard', 'n_classes': 43, 'seed': None, 'verbose': False}, 1)
+# basic_iterative_method_attack = eval_definition(torchattacks.BIM, {'eps': 4 / 255, 'alpha': 1 / 255, 'steps': 0}, 1)
+basic_iterative_method_attack_eps = eval_definition(torchattacks.BIM, {'eps': [4 / 255, 25 / 255,50 / 255,12 / 255,100 / 255,2 / 255], 'alpha': 1 / 255, 'steps': 0}, 6)
+basic_iterative_method_attack_alpha = eval_definition(torchattacks.BIM, {'eps': 4 / 255, 'alpha': [1 / 255, 4 / 255,12 / 255,25 / 255,50 / 255], 'steps': 0}, 5)
+# one_pixel_attack = eval_definition(torchattacks.OnePixel, {'pixels': 10, 'steps': 75, 'popsize': 100, 'inf_batch': 32}, 1)
+one_pixel_attack_steps = eval_definition(torchattacks.OnePixel, {'pixels': 10, 'steps': [35,75,150], 'popsize': 100, 'inf_batch': 32}, 3)
+# deep_fool_attack = eval_definition(torchattacks.DeepFool, {'steps': 50, 'overshoot': 0.02}, 1)
+deep_fool_attack_overshoot = eval_definition(torchattacks.DeepFool, {'steps': 50, 'overshoot': [0.02, 0.1, 0.2,0.5,0.005]}, 5)
+deep_fool_attack_steps = eval_definition(torchattacks.DeepFool, {'steps': [25,50,75], 'overshoot': 0.02}, 3)
+# auto_attack = eval_definition(torchattacks.AutoAttack, {'norm': 'Linf', 'eps': .05, 'version': 'standard', 'n_classes': 43, 'seed': None, 'verbose': False}, 1)
+auto_attack_eps = eval_definition(torchattacks.AutoAttack, {'norm': 'Linf', 'eps': [.05,0.1,0.2,0.5,0.01], 'version': 'standard', 'n_classes': 43, 'seed': None, 'verbose': False}, 5)
 
 
 def eval_attack(eval_model, attack_class, options, eval_data, model_predictions, folder):
@@ -33,7 +38,8 @@ def eval_attack(eval_model, attack_class, options, eval_data, model_predictions,
     if not os.path.isdir(eval_folder):
         os.mkdir(eval_folder)
     for idx in successful_adversarial:
-        save_image(adversarial_examples[idx], f"{eval_folder}/IMG-{idx}--FROM--{label_map[str(model_predictions[idx].item())]}--TO--{label_map[str(adversarial_predictions[idx].item())]}.png")
+        save_image(adversarial_examples[idx],
+                   f"{eval_folder}/IMG-{idx}--FROM--{label_map[str(model_predictions[idx].item())]}--TO--{label_map[str(adversarial_predictions[idx].item())]}.png")
 
     return successful_adversarial.shape[0] / model_predictions.shape[0]
 
@@ -74,7 +80,7 @@ def evaluate_attacks(eval_model, attack_variants, data, model_predictions):
             result = eval_attack(eval_model, attack, run_options, data, model_predictions, folder_name)
             logging.info(f"- - {options_description}: {result}")
 
-        logging.info(f"end {attack.__name__} evaluation ({datetime.datetime.now():%H-%M})\n")
+        logging.info(f"end {attack.__name__} evaluation ({datetime.datetime.now():%H:%M})\n")
     logging.info(f"finished")
 
 
@@ -86,9 +92,20 @@ if __name__ == '__main__':
     ])
     model = MyModel.load_from_checkpoint("model_checkpoint.ckpt")
     test_data = load_test_data(transform=data_transforms)
-    images, _ = zip(*test_data.image_labels[:10])
+    images, _ = zip(*test_data.image_labels[:100])
     images = torch.vstack([x.unsqueeze(0) for x in images])
     predicted_labels = model(images).argmax(dim=1)
 
     # change here the attack definition
-    evaluate_attacks(model, [auto_attack], images, predicted_labels)
+    evaluate_attacks(model,
+                     [
+                         fgsm_attack,
+                         basic_iterative_method_attack_eps,
+                         basic_iterative_method_attack_alpha,
+                         one_pixel_attack_steps,
+                         deep_fool_attack_steps,
+                         deep_fool_attack_overshoot,
+                         auto_attack_eps,
+                     ],
+                     images,
+                     predicted_labels)
