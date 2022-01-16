@@ -22,7 +22,7 @@ from torchvision.utils import save_image
 
 eval_definition = namedtuple('eval_definition', 'attack options number_runs')
 
-# put different arguments in a list, that the script should evaluate
+# put different arguments in a list which the script should evaluate
 fgsm_attack = eval_definition(torchattacks.FGSM, {'eps': [0.0035, 0.007, 0.015, 0.03, 0.06, 0.12, 0.24, 0.5]}, 8)
 # basic_iterative_method_attack = eval_definition(torchattacks.BIM, {'eps': 4 / 255, 'alpha': 1 / 255, 'steps': 0}, 1)
 ## basic_iterative_method_attack_eps = eval_definition(torchattacks.BIM, {'eps': [4 / 255, 25 / 255,50 / 255,12 / 255,100 / 255,2 / 255], 'alpha': 1 / 255, 'steps': 0}, 6)
