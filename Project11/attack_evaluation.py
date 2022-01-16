@@ -47,7 +47,7 @@ def eval_attack(eval_model, attack_class, options, eval_data, model_predictions,
     :param eval_data: the images
     :param model_predictions:  the labels
     :param folder: str, run folder, where to put the folder of this run and inside that the adversarial examples.
-    :return:
+    :return: float, successful rate of adversarial example 
     """
     eval_folder = f"{folder}/{attack_class.__name__}({','.join([f'{opt_name}={opt_value}' for opt_name, opt_value in options.items()])})"
     options['model'] = eval_model
@@ -69,7 +69,7 @@ def get_variable_options(evaluation_options):
     Transforms evaluation options to a dict with the "multiple/variable" (not fix) options as values and their names as keys.
 
     :param evaluation_options: dict of options, list values indicate multiple evaluations (2. argument of eval_definition)
-    :return: filtered evaluation_options if the value is an instance of list
+    :return: dict, filtered evaluation_options if the value is an instance of list
     """
     return {opt_name: opt_values for opt_name, opt_values in evaluation_options.items() if isinstance(opt_values, list)}
 
